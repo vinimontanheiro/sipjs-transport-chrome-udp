@@ -1,4 +1,5 @@
-/* global chrome */
+/*global chrome */
+/// <reference types="node" />
 import { EventEmitter } from "events";
 
 export default class UDPSocket extends EventEmitter{
@@ -22,16 +23,21 @@ export default class UDPSocket extends EventEmitter{
         this.info = _socketInfo;
         this.udp.bind(this.info.socketId, `0.0.0.0`, 0, (result: number) => {
           if (result < 0){
-            errorCallback({ result });
             this.connected = false;
             this.emit("close");
+            if(typeof errorCallback === "function"){
+              errorCallback(result);
+            }
           }else{
             this.connected = true;
-            this.emit("open");
+            // this.emit("open");
             this.udp.onReceive.addListener((event:any)=>{
               this.emit("message", event);
             });
-            successCallback({ result });
+
+            if(typeof successCallback === "function"){
+              successCallback(result);
+            }
           }
         });
       });
@@ -42,9 +48,8 @@ export default class UDPSocket extends EventEmitter{
 
   public send(message:any, callback:any):void{
     try {
-      const msg: string = message.toString();
       var textEnconder = new TextEncoder(); 
-      this.udp.send(this.info.socketId, textEnconder.encode(msg), this.host, this.port, sendResult => {
+      this.udp.send(this.info.socketId, textEnconder.encode(message), this.host, this.port, sendResult => {
         if(typeof callback === "function"){
           callback(sendResult);
         }

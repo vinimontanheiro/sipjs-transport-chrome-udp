@@ -41,7 +41,7 @@ const computeKeepAliveTimeout = (upperBound: number): number => {
 
 const getSocketConfig = (wsUri:string) => ({
   host: wsUri.replace(/[a-z]+:\/\/|:[0-9]+/g, ''),
-  port : wsUri.replace(/[a-z]+:\/\/|[0-9]+\.|[0-9]+\:/g, '')
+  port : Number(wsUri.replace(/[a-z]+:\/\/|[0-9]+\.|[0-9]+\:/g, ''))
 });
 
 export class Transport extends TransportBase {
@@ -70,11 +70,19 @@ export class Transport extends TransportBase {
   constructor(logger: Logger, options: any = {}) {
     super(logger, options);
     this.type = TypeStrings.Transport;
-    this.logger = logger;
+    this.logger = logger || {
+      log: (content:string) => {
+        console.log(content);
+      }
+    };
     this.reconnectionAttempts = 0;
     this.status = TransportStatus.STATUS_CONNECTING;
     this.configuration = this.loadConfig(options);
     this.server = this.configuration.wsServers[0];
+    this.boundOnOpen = this.onOpen.bind(this);
+    this.boundOnMessage = this.onMessage.bind(this);
+    this.boundOnClose = this.onClose.bind(this);
+    this.boundOnError = this.onWebsocketError.bind(this);
   }
 
   public isConnected(): boolean {
@@ -97,7 +105,7 @@ export class Transport extends TransportBase {
         if(this.configuration.traceSip){
           const sent = sendResult.resultCode === 0;
           this.logger.log(`Sent:${sent}`);
-          this.logger.log(`SendResult >>> ${JSON.stringify(sendResult)}`);
+          this.logger.log(`SentResult >>> ${JSON.stringify(sendResult)}`);
         }
       });
       return Promise.resolve({msg: message});
@@ -141,7 +149,6 @@ export class Transport extends TransportBase {
         reject("Attempted to disconnect but the websocket doesn't exist");
       }
     });
-
     return this.disconnectionPromise;
   }
 
@@ -157,7 +164,7 @@ export class Transport extends TransportBase {
     this.connectionPromise = new Promise((resolve, reject) => {
       if ((this.status === TransportStatus.STATUS_OPEN || this.status === TransportStatus.STATUS_CLOSING)
         && !options.force) {
-        this.logger.warn("WebSocket " + this.server.wsUri + " is already connected");
+        this.logger.log("WebSocket " + this.server.wsUri + " is already connected");
         reject("Failed status check - attempted to open a connection but already open/closing");
         return;
       }
@@ -167,15 +174,21 @@ export class Transport extends TransportBase {
 
       this.status = TransportStatus.STATUS_CONNECTING;
       this.emit("connecting");
-      this.logger.log("Connecting to WebSocket " + this.server.wsUri);
+      const { host, port } = getSocketConfig(this.server.wsUri);
+      this.logger.log(`Connecting to WebSocket on ${host}:${port}...`);
       this.disposeWs();
       try {
-        const { host, port } = getSocketConfig(this.server.wsUri);
         this.ws = new UDPSocket();
         this.ws.connect(host, port, () => {
           this.status = TransportStatus.STATUS_CLOSED;
           this.onError(`Failed to create a UDP socket >>> ${this.server.wsUri}`);
           reject("Failed to create a UDP socket!!");
+        },  (result:string) => {
+            this.ws.addListener("open", this.boundOnOpen);
+            this.ws.addListener("message", this.boundOnMessage);
+            this.ws.addListener("close", this.boundOnClose);
+            this.ws.addListener("error", this.boundOnError);
+            this.ws.emit("open");
         });
       } catch (e) {
         this.ws = null;
@@ -196,7 +209,7 @@ export class Transport extends TransportBase {
 
       this.connectionTimeout = setTimeout(() => {
         this.statusTransition(TransportStatus.STATUS_CLOSED);
-        this.logger.warn("Took too long to connect - exceeded time set in configuration.connectionTimeout: " +
+        this.logger.log("Took too long to connect - exceeded time set in configuration.connectionTimeout: " +
           this.configuration.connectionTimeout + "s");
         this.emit("disconnected", {code: 1000});
         this.connectionPromise = undefined;
@@ -208,15 +221,6 @@ export class Transport extends TransportBase {
         ws.close(1000);
       }, this.configuration.connectionTimeout * 1000);
 
-      this.boundOnOpen = this.onOpen.bind(this);
-      this.boundOnMessage = this.onMessage.bind(this);
-      this.boundOnClose = this.onClose.bind(this);
-      this.boundOnError = this.onWebsocketError.bind(this);
-
-      this.ws.addListener("open", this.boundOnOpen);
-      this.ws.addListener("message", this.boundOnMessage);
-      this.ws.addListener("close", this.boundOnClose);
-      this.ws.addListener("error", this.boundOnError);
     });
 
     return this.connectionPromise;
@@ -234,14 +238,14 @@ export class Transport extends TransportBase {
       }
       return;
     } else if (!data) {
-      this.logger.warn("received empty message, message discarded");
+      this.logger.log("received empty message, message discarded");
       return;
     } else if (typeof data !== "string") { // WebSocket binary message.
       try {
         // the UInt8Data was here prior to types, and doesn't check
         finishedData = String.fromCharCode.apply(null, (new Uint8Array(data) as unknown as Array<number>));
       } catch (err) {
-        this.logger.warn("received WebSocket binary message failed to be converted into string, message discarded");
+        this.logger.log("received WebSocket binary message failed to be converted into string, message discarded");
         return;
       }
 
@@ -296,7 +300,7 @@ export class Transport extends TransportBase {
       this.connectDeferredResolve = undefined;
       this.connectDeferredReject = undefined;
     } else {
-      this.logger.warn("Unexpected websocket.onOpen with no connectDeferredResolve");
+      this.logger.log("Unexpected websocket.onOpen with no connectDeferredResolve");
     }
   }
 
@@ -304,7 +308,7 @@ export class Transport extends TransportBase {
     this.logger.log("WebSocket disconnected (code: " + e.code + (e.reason ? "| reason: " + e.reason : "") + ")");
 
     if (this.status !== TransportStatus.STATUS_CLOSING) {
-      this.logger.warn("WebSocket closed without SIP.js requesting it");
+      this.logger.log("WebSocket closed without SIP.js requesting it");
       this.emit("transportError");
     }
 
@@ -348,11 +352,14 @@ export class Transport extends TransportBase {
   }
 
   private onError(e: any): void {
-    this.logger.warn("Transport error: " + e);
+    this.logger.log("Transport error: " + e);
     this.emit("transportError");
   }
 
-  private onWebsocketError(): void {
+  private onWebsocketError(error:any): void {
+    if(this.configuration.traceSip){
+      this.logger.log(error);
+    }
     this.onError("The Websocket had an error");
   }
 
@@ -362,8 +369,8 @@ export class Transport extends TransportBase {
     }
 
     if (this.noAvailableServers()) {
-      this.logger.warn("Attempted to get next ws server but there are no available ws servers left");
-      this.logger.warn("No available ws servers left - going to closed state");
+      this.logger.log("Attempted to get next ws server but there are no available ws servers left");
+      this.logger.log("No available ws servers left - going to closed state");
       this.statusTransition(TransportStatus.STATUS_CLOSED, true);
       this.emit("closed");
       this.resetServerErrorStatus();
@@ -371,14 +378,14 @@ export class Transport extends TransportBase {
     }
 
     if (this.isConnected()) {
-      this.logger.warn("Attempted to reconnect while connected - forcing disconnect");
+      this.logger.log("Attempted to reconnect while connected - forcing disconnect");
       this.disconnect({force: true});
     }
 
     this.reconnectionAttempts += 1;
 
     if (this.reconnectionAttempts > this.configuration.maxReconnectionAttempts) {
-      this.logger.warn("Maximum reconnection attempts for WebSocket " + this.server.wsUri);
+      this.logger.log("Maximum reconnection attempts for WebSocket " + this.server.wsUri);
       this.logger.log("Transport " + this.server.wsUri + " failed | connection state set to 'error'");
       this.server.isError = true;
       this.emit("transportError");
@@ -405,7 +412,7 @@ export class Transport extends TransportBase {
 
   private getNextWsServer(force: boolean = false): WsServer {
     if (this.noAvailableServers()) {
-      this.logger.warn("attempted to get next ws server but there are no available ws servers left");
+      this.logger.log("attempted to get next ws server but there are no available ws servers left");
       throw new Error("Attempted to get next ws server, but there are no available ws servers left.");
     }
     // Order servers by weight
@@ -483,12 +490,12 @@ export class Transport extends TransportBase {
       return true;
     } else {
       if (force) {
-        this.logger.warn("Attempted to assert " +
+        this.logger.log("Attempted to assert " +
           Object.keys(TransportStatus)[this.status] + " as " +
           Object.keys(TransportStatus)[status] + "- continuing with option: 'force'");
         return true;
       } else {
-        this.logger.warn("Tried to assert " +
+        this.logger.log("Tried to assert " +
         Object.keys(TransportStatus)[status] + " but is currently " +
         Object.keys(TransportStatus)[this.status]);
         return false;
@@ -507,7 +514,7 @@ export class Transport extends TransportBase {
       this.status = status;
       return true;
     } else {
-      this.logger.warn("Status transition failed - result: no-op - reason:" +
+      this.logger.log("Status transition failed - result: no-op - reason:" +
         " either gave an nonexistent status or attempted illegal transition");
       return false;
     }
