@@ -70,6 +70,7 @@ export class Transport extends TransportBase {
   constructor(logger: Logger, options: any = {}) {
     super(logger, options);
     this.type = TypeStrings.Transport;
+    this.logger = logger;
     this.reconnectionAttempts = 0;
     this.status = TransportStatus.STATUS_CONNECTING;
     this.configuration = this.loadConfig(options);
@@ -520,7 +521,7 @@ export class Transport extends TransportBase {
       reconnectionTimeout: configuration.reconnectionTimeout,
       keepAliveInterval: configuration.keepAliveInterval,
       keepAliveDebounce: configuration.keepAliveDebounce,
-      traceSip: keepAliveDebounce.traceSip
+      traceSip: configuration.traceSip
     };
 
     const configCheck: {mandatory: {[name: string]: any}, optional: {[name: string]: any}} =
